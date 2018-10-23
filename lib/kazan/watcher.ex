@@ -189,10 +189,7 @@ defmodule Kazan.Watcher do
   end
 
   @impl GenServer
-  def handle_info(
-        %HTTPoison.AsyncChunk{chunk: chunk, id: request_id},
-        %State{id: request_id, buffer: buffer} = state
-      ) do
+  def handle_info(%HTTPoison.AsyncChunk{chunk: chunk}, %State{buffer: buffer} = state) do
     {lines, buffer} =
       buffer
       |> LineBuffer.add_chunk(chunk)
@@ -205,6 +202,12 @@ defmodule Kazan.Watcher do
       {:error, :gone} ->
         {:stop, :normal, state}
     end
+  end
+
+  @impl GenServer
+  def handle_info(%HTTPoison.AsyncStatus{code: 404}, %State{name: name, rv: rv} = state) do
+    log(state, "Received 404: #{name} rv: #{rv}")
+    {:noreply, state}
   end
 
   @impl GenServer
@@ -275,7 +278,11 @@ defmodule Kazan.Watcher do
   # corresponding messages are sent to the send_to process
   defp process_line(line, current_rv, %State{} = state) do
     %State{name: name, send_to: send_to} = state
-    {:ok, %{"type" => type, "object" => raw_object}} = Poison.decode(line)
+    {type, raw_object} =
+      case Poison.decode(line) do
+        {:ok, %{"type" => type, "object" => raw_object}} -> {type, raw_object}
+        {:ok, raw_object} -> {"MODIFIED", raw_object}
+      end
     {:ok, model} = Kazan.Models.decode(raw_object)
 
     case extract_rv(raw_object) do
@@ -317,6 +324,7 @@ defmodule Kazan.Watcher do
 
   defp extract_rv(%{"metadata" => %{"resourceVersion" => rv}}), do: rv
   defp extract_rv(%{metadata: %{resource_version: rv}}), do: rv
+  defp extract_rv(%{"code" => 404, "reason" => reason}), do: {:gone, reason}
 
   defp log(%State{log_level: log_level}, msg), do: log(log_level, msg)
   defp log(false, _), do: :ok

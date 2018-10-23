@@ -5,9 +5,9 @@ defmodule KazanIntegrationTest do
   alias Kazan.Apis.Extensions.V1beta1, as: ExtensionsV1beta1
   alias Kazan.Apis.Rbacauthorization.V1beta1, as: RbacauthorizationV1beta1
   alias Kazan.Apis.Core.V1.{Pod, PodStatus, PodSpec, Container}
+  alias Kazan.Watcher.Event, as: WatchEvent
 
   alias Kazan.Models.Apimachinery.Meta.V1.{
-    WatchEvent,
     ObjectMeta,
     DeleteOptions
   }
@@ -147,6 +147,34 @@ defmodule KazanIntegrationTest do
       },
       3000
     )
+  end
+
+  test "Can listen for pod status changes", %{server: server} do
+    pod_name = "watch-test-pod"
+
+    create_pod(pod_name, server: server)
+
+    :timer.sleep(3000)
+
+    CoreV1.read_namespaced_pod!(@namespace, pod_name, timeout_seconds: 1)
+    |> Kazan.Watcher.start_link(server: server, recv_timeout: 10500)
+
+    patch_pod(pod_name, server: server)
+
+    assert_receive(
+      %WatchEvent{
+        object: %Pod{
+          metadata: %ObjectMeta{name: ^pod_name},
+          spec: %PodSpec{active_deadline_seconds: 1}
+        },
+        type: :modified
+      },
+      3000
+    )
+
+    delete_pod(pod_name, server: server)
+
+    assert_receive(%WatchEvent{type: :gone}, 3000)
   end
 
   test "When consumer terminates so does watcher", %{server: server} do
